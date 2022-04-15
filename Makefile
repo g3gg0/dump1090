@@ -152,6 +152,11 @@ ifeq ($(LIMESDR), yes)
   LIBS_SDR += $(shell pkg-config --libs LimeSuite)
 endif
 
+ifeq ($(RTSA), yes)
+  SDR_OBJ += sdr_rtsa.o
+  DUMP1090_CPPFLAGS += -DENABLE_RTSA
+endif
+
 
 ##
 ## starch (runtime DSP code selection) mix, architecture-specific
@@ -198,6 +203,7 @@ showconfig:
 	@echo "  BladeRF support: $(BLADERF)" >&2
 	@echo "  HackRF support:  $(HACKRF)" >&2
 	@echo "  LimeSDR support: $(LIMESDR)" >&2
+	@echo "  RTSA support:    $(RTSA)" >&2
 
 %.o: %.c *.h
 	$(CC) $(ALL_CCFLAGS) -c $< -o $@
