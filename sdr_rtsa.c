@@ -25,12 +25,18 @@
 #include <netdb.h>
 #include <netinet/in.h>
 
+typedef struct {
+    int16_t i;
+    int16_t q;
+} sample_t;
+
 static struct {
     int rtsa_http;
     uint32_t center_frequency;
     double rtsa_filter_width;
     double sample_rate;
-    double in_pos;
+    double resample_remain;
+    sample_t prev_sample;
 
     iq_convert_fn converter;
     struct converter_state *converter_state;
@@ -133,7 +139,6 @@ static void rtsa_parse(const char *json)
 
         if(rate) {
             rtsa_dev.sample_rate = rate;
-            printf("Switched to %f S/s sampling rate\n", rtsa_dev.sample_rate);
         }
     }
 }
@@ -151,33 +156,41 @@ static void rtsa_callback(unsigned char *buf, uint32_t len, void *ctx)
         return;
     }
     
+    uint32_t pairs = len / 4;
     uint32_t outPos = 0;
-    int16_t *iqBuf = (int16_t*)buf;
+    sample_t *iqBuf = (sample_t*)buf;
+    double ratio = rtsa_dev.sample_rate / Modes.sample_rate;
+    double inPos = rtsa_dev.resample_remain;
 
-    /* we have to resample the input signal to 2.4Ms/s.
-       code is inspired by https://gist.github.com/ExternPointer/08455b041acdd9f5d9ab830718e203d4 
-       but to my understanding the last sample must be preserved for the next block.
-       currently its "good enough" but not correct.
-    */
-    double ratio = (double)rtsa_dev.sample_rate / (double)Modes.sample_rate;
-    while(rtsa_dev.in_pos < len/4 - 1)
+    /* resampling within the same buffer only works if we are downsampling */
+    while(inPos < pairs)
     {
-        float w = 1.0f - (rtsa_dev.in_pos - (int)rtsa_dev.in_pos);
+        /* keep the integer position we are interpolating at and also the relative position inbetween */
+        uint32_t inPosBase = inPos;
+        double w = inPos - inPosBase;
 
-        iqBuf[2 * outPos + 0] = iqBuf[(int)(2 * rtsa_dev.in_pos + 0)] * w + iqBuf[(int)(2 * (rtsa_dev.in_pos + 1) + 0)] * (1.0f - w);
-        iqBuf[2 * outPos + 1] = iqBuf[(int)(2 * rtsa_dev.in_pos + 1)] * w + iqBuf[(int)(2 * (rtsa_dev.in_pos + 1) + 1)] * (1.0f - w);
-        rtsa_dev.in_pos += ratio;
+        /* capture for both I and Q the samples to interpolate inbetween */
+        sample_t before = (inPosBase > 0) ? iqBuf[inPosBase - 1] : rtsa_dev.prev_sample;
+        sample_t after = iqBuf[inPosBase];
+        
+        iqBuf[outPos].i = before.i * (1.0f - w) + after.i * w;
+        iqBuf[outPos].q = before.q * (1.0f - w) + after.q * w;
+
+        /* advance input by the ratio and output by one */
+        inPos += ratio;
         outPos++;
     }
-    rtsa_dev.in_pos -= (len/4-1);
 
+    /* capture the last value of this block, it will be the next block's first value */
+    rtsa_dev.prev_sample = iqBuf[pairs - 1];
+    /* keep the ratio for the next block */
+    rtsa_dev.resample_remain = inPos - pairs;
+    /* from now on use the new, resampled length */
     len = outPos * 4;
 
-
-    unsigned samples_read = len/2; // Drops any trailing odd sample, not much else we can do there
+    unsigned samples_read = len / 2;
     if (!samples_read)
         return; // that wasn't useful
-
 
     struct mag_buf *outbuf = fifo_acquire(0 /* don't wait */);
     if (!outbuf) {
@@ -224,7 +237,9 @@ static void rtsa_callback(unsigned char *buf, uint32_t len, void *ctx)
 void rtsaInitConfig()
 {
     rtsa_dev.rtsa_http = -1;
-    rtsa_dev.in_pos = 0;
+    rtsa_dev.resample_remain = 0;
+    rtsa_dev.prev_sample.i = 0;
+    rtsa_dev.prev_sample.q = 0;
     rtsa_dev.center_frequency = 0;
     rtsa_dev.rtsa_filter_width = 0;
     rtsa_dev.converter = NULL;
