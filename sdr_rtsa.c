@@ -162,11 +162,11 @@ static void rtsa_callback(unsigned char *buf, uint32_t len, void *ctx)
     double ratio = rtsa_dev.sample_rate / Modes.sample_rate;
     double inPos = rtsa_dev.resample_remain;
 
-    if (pairs < 1) {
+    /* resampling within the same buffer only works if we are downsampling */
+    if (pairs < 1 || ratio < 1.0f) {
         return;
     }
 
-    /* resampling within the same buffer only works if we are downsampling */
     while(inPos < pairs)
     {
         /* keep the integer position we are interpolating at and also the relative position inbetween */
